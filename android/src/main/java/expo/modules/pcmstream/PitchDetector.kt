@@ -264,7 +264,8 @@ internal class PitchDetector(val windowSize: Int) {
 }
 
 /**
- * Turns a continuous mono stream, delivered hop by hop, into one pitch reading per hop.
+ * Turns a continuous mono stream, delivered hop by hop, into one pitch reading per hop:
+ * MPM finds the pitch, then [FundamentalRefiner] corrects it to the fundamental partial.
  *
  * The high-pass filter runs continuously across hops. The previous JS implementation
  * restarted it (and subtracted the window mean) for every window; the filter's startup
@@ -281,6 +282,7 @@ internal class PitchAnalyzer(
   class Result(val frequency: Double, val clarity: Double, val rms: Double)
 
   private val detector = PitchDetector(windowSize)
+  private val refiner = FundamentalRefiner(windowSize)
   private val window = DoubleArray(windowSize)
   private val alpha: Double
   private var filled = 0
@@ -319,7 +321,9 @@ internal class PitchAnalyzer(
     if (filled < windowSize || rms < silenceThreshold) return Result(Double.NaN, 0.0, rms)
     val detection = detector.detect(window, sampleRate, minFrequency, maxFrequency)
       ?: return Result(Double.NaN, 0.0, rms)
-    return Result(detection.frequency, detection.clarity, rms)
+    refiner.analyze(window)
+    val pitch = refiner.correctSubharmonic(detection.frequency, sampleRate, maxFrequency)
+    return Result(refiner.refine(pitch, sampleRate), detection.clarity, rms)
   }
 
   companion object {

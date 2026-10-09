@@ -7,6 +7,7 @@ Real-time microphone pitch detection for Expo and React Native. Both the audio c
 ## Features
 
 - **Native McLeod Pitch Method (MPM)** with FFT-accelerated autocorrelation: Accelerate/vDSP on iOS and a precomputed-twiddle real FFT on Android. The Swift and Kotlin implementations produce identical results to machine precision.
+- **Reads the fundamental, not just the waveform's period.** The partials of steel strings run progressively sharp (inharmonicity), so the waveform's period, which autocorrelation measures, reads guitar strings ~3 cents and bass strings ~10–15 cents sharp, and wobbles by a few cents. A spectral stage measures the partials, fits the string's inharmonicity and reports the fundamental partial. It also undoes the octave-low readings that stiff low strings can provoke.
 - **Accurate on low strings.** A 35 Hz high-pass filter runs continuously over the stream. Restarting the filter for every window adds a transient that reads low notes several cents flat.
 - **No phantom notes from hum.** Periodicity below the configured range, such as 50/60 Hz mains hum or room rumble, is rejected. It is not reported as a pitch pinned to the bottom of the range.
 - **Low latency.**
@@ -94,7 +95,7 @@ Starts the microphone and native pitch detection. Calling it while the stream is
 
 | Option             | Default | Description                                                                 |
 | ------------------ | ------- | --------------------------------------------------------------------------- |
-| `windowSize`       | `2048`  | Analysis window in samples (256–16384). Needs at least ~2 periods of the lowest note. |
+| `windowSize`       | `2048`  | Analysis window in samples (256–16384). For full accuracy it should hold ~4.5 periods of the lowest note, e.g. 4096 for a guitar's low E (82 Hz) and 8192 for a bass's low E (41 Hz) at 48 kHz. Below 2.5 periods the fundamental refinement is skipped. |
 | `hopSize`          | `1024`  | Samples between analyses. One `onPitch` event is sent per hop.              |
 | `minFrequency`     | `65`    | Lowest detectable frequency in Hz.                                          |
 | `maxFrequency`     | `1500`  | Highest detectable frequency in Hz.                                         |
@@ -150,14 +151,20 @@ microphone ─► real-time callback ─► ring buffer ─► analysis thread �
                                                    MPM: autocorrelation via FFT,
                                                    NSDF, key-maximum peak picking,
                                                    parabolic interpolation
+                                                   fundamental refinement: windowed
+                                                   spectrum, subharmonic check,
+                                                   partials 1-8, inharmonicity fit
 ```
 
 - **Peak picking.** The first NSDF key maximum within 93% of the highest one is chosen, which favors the fundamental over a stronger overtone. Detections whose peak clarity is below 0.5 are dropped.
 - **Range edges.** A lobe that the lag range cuts off is followed past the range. If it keeps rising there, it belongs to a pitch below `minFrequency` and is ignored. A peak right at the top of the range is still refined by interpolation.
-- **Measured accuracy.** These figures come from synthetic signals (pure tones, plucked-string models with inharmonicity, and noise):
-  - Pure tones from 65 Hz to 1480 Hz read within 0.05 cents.
-  - Simulated guitar strings read with 0.04 cents RMS error.
-- **Speed.** One hop (filter, window and MPM at 2048 samples) takes ~15 µs on Apple Silicon (Swift/vDSP) and ~40 µs on a desktop JVM (Kotlin).
+- **Subharmonic check.** A stiff string's partials can line up better at twice its period than at its period, so MPM occasionally reads a low string an octave low. If the odd multiples of the detected pitch hold less than 1% of the energy of the even ones, the pitch is doubled.
+- **Fundamental refinement.** The window is tapered with a 4-term Blackman-Harris window and zero-padded 4x, and partials 1–8 are located within 50 cents of their expected positions (log-parabolic peak interpolation). Partials more than 25 dB below the strongest one are ignored. The string's inharmonicity coefficient B is fitted to the partials, (f_n / n)² = f0² (1 + B n²), and smoothed over time; it is relearned when the note changes. Each partial then gives an estimate of the fundamental partial, f_n / n · √((1 + B) / (1 + B n²)), and these are averaged with weights n² × power, the weight each partial carries in the autocorrelation. A weak or missing fundamental (a phone microphone hearing a bass) still reads accurately. A correction larger than 60 cents is discarded as a misread partial.
+- **Measured accuracy.** These figures come from synthetic signals: pure tones, and plucked-string (with inharmonicity) and bowed-string models heard through a phone-like microphone (a 100–200 Hz roll-off) with noise.
+  - Pure tones from 30 Hz to 2 kHz read within 0.06 cents.
+  - Steel strings (guitar, B = 1e-5–1e-4; bass, B = 1e-4–4e-4) read with a mean error within 0.03 cents and a per-reading SD of 0.05–0.3 cents at 30 dB SNR. The period alone (MPM) reads them 2–4 cents (guitar) and 4–14 cents (bass) sharp, with an SD of 1.4–6.5 cents.
+  - Bowed strings (violin and cello models) read with a mean error within 0.02 cents at 30 dB SNR.
+- **Speed.** One hop (filter, MPM and refinement) takes ~30 / 60 / 130 µs on Apple Silicon (Swift/vDSP) with 2048 / 4096 / 8192-sample windows, and ~90 / 180 / 450 µs on a desktop JVM (Kotlin).
 
 ## Platform notes
 

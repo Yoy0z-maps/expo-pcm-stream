@@ -199,7 +199,8 @@ final class PitchDetector {
   }
 }
 
-/// Turns a continuous mono stream, delivered hop by hop, into one pitch reading per hop.
+/// Turns a continuous mono stream, delivered hop by hop, into one pitch reading per hop:
+/// MPM finds the pitch, then `FundamentalRefiner` corrects it to the fundamental partial.
 ///
 /// The high-pass filter runs continuously across hops. The previous JS implementation
 /// restarted it (and subtracted the window mean) for every window; the filter's startup
@@ -219,6 +220,7 @@ final class PitchAnalyzer {
   let sampleRate: Double
   let silenceThreshold: Double
   private let detector: PitchDetector
+  private let refiner: FundamentalRefiner
   private let window: UnsafeMutablePointer<Double>
   private let alpha: Double
   private var filled = 0
@@ -228,12 +230,14 @@ final class PitchAnalyzer {
 
   init?(windowSize: Int, hopSize: Int, sampleRate: Double, silenceThreshold: Double) {
     guard hopSize > 0, hopSize <= windowSize, sampleRate > 0,
-          let detector = PitchDetector(windowSize: windowSize) else { return nil }
+          let detector = PitchDetector(windowSize: windowSize),
+          let refiner = FundamentalRefiner(windowSize: windowSize) else { return nil }
     self.windowSize = windowSize
     self.hopSize = hopSize
     self.sampleRate = sampleRate
     self.silenceThreshold = silenceThreshold
     self.detector = detector
+    self.refiner = refiner
     window = .allocate(capacity: windowSize)
     window.initialize(repeating: 0, count: windowSize)
     let rc = 1 / (2 * Double.pi * PitchAnalyzer.highpassCutoffHz)
@@ -275,6 +279,9 @@ final class PitchAnalyzer {
     else {
       return Result(frequency: nil, clarity: 0, rms: rms)
     }
-    return Result(frequency: detection.frequency, clarity: detection.clarity, rms: rms)
+    refiner.analyze(window)
+    let pitch = refiner.correctSubharmonic(detection.frequency, sampleRate: sampleRate, maxFrequency: maxFrequency)
+    let frequency = refiner.refine(pitch, sampleRate: sampleRate)
+    return Result(frequency: frequency, clarity: detection.clarity, rms: rms)
   }
 }
