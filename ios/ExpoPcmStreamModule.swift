@@ -221,9 +221,17 @@ public class ExpoPcmStreamModule: Module {
     ) { [weak self] notification in
       guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
             let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
+      let wasSuspended = Self.isSuspensionNotice(notification)
       self?.controlQueue.async {
         guard let self = self else { return }
         switch type {
+        case .began where wasSuspended:
+          // iOS 15 only: a late notice, sent once the app runs again, that the system deactivated
+          // the session while the app was suspended. No .ended follows, and the stream may have
+          // been started again since: only bring it back if it's still down.
+          if self.capture?.engine.isRunning != true {
+            self.restartCapture()
+          }
         case .began:
           // The system already stopped the engine (call, Siri, alarm...); keep the session
           // config and activeOptions so the stream comes back when the interruption ends.
@@ -246,6 +254,15 @@ public class ExpoPcmStreamModule: Module {
   }
 
   // MARK: - Helpers
+
+  /// Whether an interruption notification only reports, late, that the system deactivated the
+  /// session while the app was suspended. iOS 16 and later no longer send these.
+  private static func isSuspensionNotice(_ notification: Notification) -> Bool {
+    guard let rawReason = notification.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt else {
+      return false
+    }
+    return AVAudioSession.InterruptionReason(rawValue: rawReason) == .appWasSuspended
+  }
 
   private static func isValid(_ options: StartOptions) -> Bool {
     return options.windowSize >= 256 && options.windowSize <= 16384
